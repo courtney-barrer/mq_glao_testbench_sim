@@ -68,7 +68,7 @@ def analyze_psf(psf, perfect_psf, angular_pixel_scale, ao_label="N/A", log_plot=
 # 2. SETUP & DATA LOADING
 # ==========================================
 
-FITS_PATH = "phasescreens_median_dmScaled-1_radialScaled-0.fits"
+FITS_PATH = "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
 with fits.open(FITS_PATH) as hdul:
     # Ensure correct optical order from source (z=-3.25) to pupil (z=0)
     layer_configs = [{"label": "FA", "z": -2.50, "hz": 0.2}, {"label": "GL3", "z": -0.096, "hz": 1.4},
