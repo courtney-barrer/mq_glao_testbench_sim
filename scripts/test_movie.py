@@ -34,7 +34,7 @@ def simulate_sci_performance(beam, gl_corr, bench, t, pad_size, npix_pupil):
 # ==========================================
 
 def run_glao_telemetry(exposure_s=3.6, dt=0.1):
-    WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 589e-9, 0.013, 256, 1024
+    WAVELENGTH, SCIENCE_WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 633e-9, 2.2e-6, 0.013, 256, 2048
     SCI_OFFS = [0.0, 5.0, 10.0] 
     #FITS_PATH =  "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
     FITS_PATH = "C:/Users/bmcinnes/OneDrive - Macquarie University/Documents/GitHub/mq_glao_testbench_sim/phasescreens_median_dmScaled-1_radialScaled-0.fits"
@@ -56,7 +56,7 @@ def run_glao_telemetry(exposure_s=3.6, dt=0.1):
 
     lgs_coords = [(10,10), (-10,10), (10,-10), (-10,-10)]
     lgs_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(x/60), np.deg2rad(y/60), -3.25, [0,0,0], D_BEAM, WAVELENGTH, "LGS", 3, 12) for x,y in lgs_coords]
-    sci_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(th/60), 0, -3.25, [0,0,0], D_BEAM, WAVELENGTH, f"Sci", 3, 12) for th in SCI_OFFS]
+    sci_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(th/60), 0, -3.25, [0,0,0], D_BEAM, SCIENCE_WAVELENGTH, f"Sci", 3, 12) for th in SCI_OFFS]
 
     telemetry = {"times": np.arange(0, exposure_s, dt), "bench": bench, "frames": [], 
                  "sci_angles": SCI_OFFS, "lgs_beams": lgs_beams, "sci_beams": sci_beams}

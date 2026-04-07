@@ -92,7 +92,7 @@ with fits.open(FITS_PATH) as hdul:
                       map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*cfg["hz"], label=cfg["label"]))
 
 # Constants
-WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 589e-9, 0.013, 256, 2048
+WAVELENGTH, SCIENCE_WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 633e-9, 2.2e-6, 0.013, 256, 2048
 ANGULAR_SCALE = 1.0 / (PAD_SIZE / (NPIX_PUPIL / 2.0))
 EXPOSURE_TIME, DT = 2.0, 0.2 # Causes some zero fwhm GLAO results
 #EXPOSURE_TIME, DT = 2.0, 0.4 # Reduced for quick testing
@@ -101,10 +101,10 @@ times = np.arange(0, EXPOSURE_TIME, DT)
 science_angles = np.linspace(0, 10, 5)
 lgs_coords = [(10,10), (-10,10), (10,-10), (-10,-10)]
 lgs_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(x/60), np.deg2rad(y/60), -3.25, [0,0,0], D_BEAM, WAVELENGTH, f"L", 3, 12) for x,y in lgs_coords]
-sci_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(th/60), 0, -3.25, [0,0,0], D_BEAM, WAVELENGTH, f"S", 3, 12) for th in science_angles]
+sci_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(th/60), 0, -3.25, [0,0,0], D_BEAM, SCIENCE_WAVELENGTH, f"S", 3, 12) for th in science_angles]
 
-# Perfect Baseline (identical beam geometry)
-ref_beam = bt.make_converging_beam_from_field_angles(0, 0, -3.25, [0,0,0], D_BEAM, WAVELENGTH, "ref", 3, 12)
+# Perfect Baseline (identical beam geometry at science wavelength)
+ref_beam = bt.make_converging_beam_from_field_angles(0, 0, -3.25, [0,0,0], D_BEAM, SCIENCE_WAVELENGTH, "ref", 3, 12)
 perf_sample = bt.sample_beam_phase_amplitude_on_pupil_plane(ref_beam, bench, [0,0,0], 0.0, NPIX_PUPIL)
 perf_sample["phase_map_rad"] *= 0
 perfect_psf = pad_and_fft_psf(perf_sample, PAD_SIZE)
