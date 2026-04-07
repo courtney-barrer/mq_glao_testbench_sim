@@ -99,8 +99,10 @@ for batch_name in batch_name_list:
        
         if 'radialScaled-1' in batch_name:
             # Create Radial r0 Mask (Tapering)
-            scale_mask = make_radial_mask(N, R_transition, 1, Scale_edge)
-            phase = phase * scale_mask
+            #never scale the FA screen as it will not be laterally shifted to change r0
+            if 'FA' not in name:
+                scale_mask = make_radial_mask(N, R_transition, 1, Scale_edge)
+                phase = phase * scale_mask
 
         # Metadata Reporting
         OPD = (np.max(phase) - np.min(phase)) * 500e-9 / (2*np.pi) * 1e6

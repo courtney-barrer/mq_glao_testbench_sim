@@ -347,8 +347,9 @@ def second_moment_initial_guess(x: np.ndarray, y: np.ndarray, z: np.ndarray):
     offset = 0.0
     return amp, x0, y0, sigma_major, sigma_minor, theta, offset
 
-
-def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Dict[str, Any]:
+#add mosffat fitting
+#update with diffractiuon limits
+def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray, minx=1.0, miny=1.0) -> Dict[str, Any]:
     z = np.asarray(z, dtype=float)
     z_fit = z - np.nanmin(z)
     if np.nanmax(z_fit) > 0:
@@ -365,8 +366,8 @@ def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Dict[str, An
             "amp": amp,
             "x0": x0,
             "y0": y0,
-            "sigma_x": sigma_x,
-            "sigma_y": sigma_y,
+            "sigma_x": np.max( sigma_x, minx ),
+            "sigma_y": np.max(sigma_y, miny),
             "theta": theta,
             "offset": offset,
             "method": "moments",
@@ -391,8 +392,8 @@ def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Dict[str, An
             "amp": amp,
             "x0": x0,
             "y0": y0,
-            "sigma_x": sigma_x,
-            "sigma_y": sigma_y,
+            "sigma_x": np.max( sigma_x, minx ),
+            "sigma_y": np.max(sigma_y, miny),
             "theta": theta,
             "offset": offset,
             "method": "curve_fit",

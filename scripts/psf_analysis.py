@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
@@ -68,22 +69,33 @@ def analyze_psf(psf, perfect_psf, angular_pixel_scale, ao_label="N/A", log_plot=
 # 2. SETUP & DATA LOADING
 # ==========================================
 
-FITS_PATH = "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
+#FITS_PATH = "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
+#FITS_PATH = "C:/Users/bmcinnes/OneDrive - Macquarie University/Documents/GitHub/mq_glao_testbench_sim/phasescreens_median_dmScaled-1_radialScaled-0.fits"
+
+# FITS file path relative to this script's directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+FITS_PATH = os.path.join(script_dir, "..", "phasescreens_median_dmScaled-1_radialScaled-0.fits")
+
 with fits.open(FITS_PATH) as hdul:
     # Ensure correct optical order from source (z=-3.25) to pupil (z=0)
-    layer_configs = [{"label": "FA", "z": -2.50, "hz": 0.2}, {"label": "GL3", "z": -0.096, "hz": 1.4},
-                    {"label": "GL2", "z": -0.048, "hz": 1.0}, {"label": "GL1", "z": -0.024, "hz": 0.7}]
+    layer_configs = [{"label": "FA", "z": -2.50, "hz": 0.2}, {"label": "GL3", "z": -0.060, "hz": 1.4},
+                    {"label": "GL2", "z": -0.030, "hz": 1.0}, {"label": "GL1", "z": -0.001, "hz": 0.7}]
     bench = bt.OpticalBench3D()
     pix_scale = hdul[0].header['PIXSCALE']
     for cfg in layer_configs:
         opd = (hdul[cfg["label"]].data * 500e-9) / (2*np.pi)
-        bench.add(bt.RotatingPhaseScreen3D(point=[0,0,cfg["z"]], normal=[0,0,1], opd_map=opd, 
-                  map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*cfg["hz"], label=cfg["label"]))
+        if cfg["label"] == "FA":
+            bench.add(bt.RotatingPhaseScreen3D(point=[26e-3,0,cfg["z"]], normal=[0,0,1], opd_map=opd,
+                      map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*cfg["hz"], label=cfg["label"]))
+        else:
+            bench.add(bt.RotatingPhaseScreen3D(point=[34e-3,0,cfg["z"]], normal=[0,0,1], opd_map=opd,
+                      map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*cfg["hz"], label=cfg["label"]))
 
 # Constants
 WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 589e-9, 0.013, 256, 2048
 ANGULAR_SCALE = 1.0 / (PAD_SIZE / (NPIX_PUPIL / 2.0))
-EXPOSURE_TIME, DT = 2.0, 0.4 # Reduced for quick testing
+EXPOSURE_TIME, DT = 2.0, 0.2 # Causes some zero fwhm GLAO results
+#EXPOSURE_TIME, DT = 2.0, 0.4 # Reduced for quick testing
 times = np.arange(0, EXPOSURE_TIME, DT)
 
 science_angles = np.linspace(0, 10, 5)
@@ -109,7 +121,8 @@ for t in times:
     # 1. Reconstruct GL correction from 4 corners
     lgs_s = [bt.sample_beam_phase_amplitude_on_pupil_plane(b, bench, [0,0,0], t, NPIX_PUPIL) for b in lgs_beams]
     gl_phase = np.mean([s["phase_map_rad"] for s in lgs_s], axis=0)
-    gl_corr = apply_dm_correction(gl_phase, acts=35, mask=lgs_s[0]["mask"])
+    #gl_corr = apply_dm_correction(gl_phase, acts=35, mask=lgs_s[0]["mask"])
+    gl_corr = apply_dm_correction(gl_phase, acts=11, mask=lgs_s[0]["mask"])
     
     # 2. Apply to Target beams
     for i, beam in enumerate(sci_beams):
@@ -161,4 +174,55 @@ axes[1,1].plot(r_axis, res_ao[0]["ee_curve"][:1000], 'b-', label='GLAO Center')
 axes[0,0].set_ylabel("Strehl"); axes[0,1].set_ylabel("FWHM [L/D]"); axes[1,0].set_ylabel("Ellipticity"); axes[1,1].set_ylabel("Enc. Energy")
 for ax in axes.flatten(): ax.set_xlabel("Field Angle [arcmin]"); ax.legend(); ax.grid(True, alpha=0.3)
 plt.tight_layout(); plt.show()
+
+# ==========================================
+# 5. RESULTS TABLE
+# ==========================================
+
+import pandas as pd
+
+results_data = []
+for i, angle in enumerate(science_angles):
+    results_data.append({
+        "Field Angle [arcmin]": angle,
+        "AO Mode": "No AO",
+        "Strehl": f"{res_no[i]['strehl']:.4f}",
+        "FWHM [L/D]": f"{res_no[i]['fwhm']:.4f}",
+        "Ellipticity": f"{res_no[i]['ell']:.4f}",
+        "EE80 [L/D]": f"{res_no[i]['ee80']:.4f}"
+    })
+    results_data.append({
+        "Field Angle [arcmin]": angle,
+        "AO Mode": "GLAO",
+        "Strehl": f"{res_ao[i]['strehl']:.4f}",
+        "FWHM [L/D]": f"{res_ao[i]['fwhm']:.4f}",
+        "Ellipticity": f"{res_ao[i]['ell']:.4f}",
+        "EE80 [L/D]": f"{res_ao[i]['ee80']:.4f}"
+    })
+
+df_results = pd.DataFrame(results_data)
+
+df_no_ao = df_results[df_results["AO Mode"] == "No AO"].reset_index(drop=True)
+df_glao = df_results[df_results["AO Mode"] == "GLAO"].reset_index(drop=True)
+
+print("\n" + "="*80)
+print("DIAGNOSTIC RESULTS TABLE - NO AO")
+print("="*80)
+print(df_no_ao.to_string(index=False))
+print("\n" + "="*80)
+print("DIAGNOSTIC RESULTS TABLE - GLAO")
+print("="*80)
+print(df_glao.to_string(index=False))
+print("="*80)
+
+# Save results to CSV
+results_filename = "psf_analysis_results.csv"
+df_results.to_csv(results_filename, index=False)
+results_no_ao_filename = "psf_analysis_results_no_ao.csv"
+results_glao_filename = "psf_analysis_results_glao.csv"
+df_no_ao.to_csv(results_no_ao_filename, index=False)
+df_glao.to_csv(results_glao_filename, index=False)
+print(f"\nResults saved to: {results_filename}")
+print(f"Results also saved to: {results_no_ao_filename} and {results_glao_filename}")
+
 

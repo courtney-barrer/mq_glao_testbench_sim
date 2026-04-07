@@ -36,18 +36,23 @@ def simulate_sci_performance(beam, gl_corr, bench, t, pad_size, npix_pupil):
 def run_glao_telemetry(exposure_s=3.6, dt=0.1):
     WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 589e-9, 0.013, 256, 1024
     SCI_OFFS = [0.0, 5.0, 10.0] 
-    FITS_PATH =  "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
+    #FITS_PATH =  "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
+    FITS_PATH = "C:/Users/bmcinnes/OneDrive - Macquarie University/Documents/GitHub/mq_glao_testbench_sim/phasescreens_median_dmScaled-1_radialScaled-0.fits"
 
 
     with fits.open(FITS_PATH) as hdul:
         pix_scale = hdul[0].header['PIXSCALE']
         bench = bt.OpticalBench3D()
-        layers = [{"lbl":"FA", "z":-2.50, "hz":0.4}, {"lbl":"GL3", "z":-0.096, "hz":1.4}, 
-                  {"lbl":"GL2", "z":-0.048, "hz":1.0}, {"lbl":"GL1", "z":-0.024, "hz":0.7}]
+        layers = [{"lbl":"FA", "z":-2.50, "hz":0.4}, {"lbl":"GL3", "z":-0.060, "hz":1.4}, 
+                  {"lbl":"GL2", "z":-0.030, "hz":1.0}, {"lbl":"GL1", "z":-0.000, "hz":0.7}]
         for l in layers:
             opd = (hdul[l["lbl"]].data * 500e-9) / (2*np.pi)
-            bench.add(bt.RotatingPhaseScreen3D(point=[0,0,l["z"]], normal=[0,0,1], opd_map=opd, 
-                      map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*l["hz"], label=l["lbl"]))
+            if l["lbl"] == "FA":
+                bench.add(bt.RotatingPhaseScreen3D(point=[26e-3,0,l["z"]], normal=[0,0,1], opd_map=opd,
+                          map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*l["hz"], label=l["lbl"]))
+            else:
+                bench.add(bt.RotatingPhaseScreen3D(point=[34e-3,0,l["z"]], normal=[0,0,1], opd_map=opd,
+                          map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*l["hz"], label=l["lbl"]))
 
     lgs_coords = [(10,10), (-10,10), (10,-10), (-10,-10)]
     lgs_beams = [bt.make_converging_beam_from_field_angles(np.deg2rad(x/60), np.deg2rad(y/60), -3.25, [0,0,0], D_BEAM, WAVELENGTH, "LGS", 3, 12) for x,y in lgs_coords]
@@ -104,7 +109,10 @@ def make_movie(tel, base_filename="glao_telemetry"):
         # Col 2: Screens & Overlays
         for i, elem in enumerate(tel["bench"].elements):
             img = get_rotating_screen_image(elem, f["t"])
-            ax_scr[i].imshow(img, cmap='RdBu', origin='lower', extent=[-15, 15, -15, 15])
+            #ax_scr[i].imshow(img, cmap='RdBu', origin='lower', extent=[-15, 15, -15, 15]) #MCINNES
+            r_mm = elem.clear_radius * 1000
+            ax_scr[i].imshow(img, cmap='RdBu', origin='lower',extent=[-r_mm, r_mm, -r_mm, r_mm])
+
             ax_scr[i].set_title(elem.label)
             for b in tel["lgs_beams"]:
                 inter = tel["bench"].trace_chief_intersections(b, t=f["t"])
