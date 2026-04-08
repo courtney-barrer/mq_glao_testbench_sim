@@ -320,6 +320,19 @@ def gaussian2d_rotated(coords, amp, x0, y0, sigma_x, sigma_y, theta, offset):
     return g.ravel()
 
 
+def moffat2d_rotated(coords, amp, x0, y0, alpha_x, alpha_y, beta, theta, offset):
+    x, y = coords
+    ct = np.cos(theta)
+    st = np.sin(theta)
+
+    xp = ct * (x - x0) + st * (y - y0)
+    yp = -st * (x - x0) + ct * (y - y0)
+
+    rr = (xp / alpha_x) ** 2 + (yp / alpha_y) ** 2
+    m = offset + amp * (1.0 + rr) ** (-beta)
+    return m.ravel()
+
+
 def second_moment_initial_guess(x: np.ndarray, y: np.ndarray, z: np.ndarray):
     z = np.asarray(z, dtype=float)
     z = z - np.nanmin(z)
@@ -347,7 +360,6 @@ def second_moment_initial_guess(x: np.ndarray, y: np.ndarray, z: np.ndarray):
     offset = 0.0
     return amp, x0, y0, sigma_major, sigma_minor, theta, offset
 
-#add mosffat fitting
 #update with diffractiuon limits
 def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray, minx=1.0, miny=1.0) -> Dict[str, Any]:
     z = np.asarray(z, dtype=float)
@@ -413,6 +425,104 @@ def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray, minx=1.0, miny=
         }
 
 
+def fit_2d_moffat(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    minx=1.0,
+    miny=1.0,
+    fit_region: str = "all",
+    wing_quantile: float = 0.70,
+) -> Dict[str, Any]:
+    z = np.asarray(z, dtype=float)
+    z_fit = z - np.nanmin(z)
+    if np.nanmax(z_fit) > 0:
+        z_fit = z_fit / np.nanmax(z_fit)
+
+    guess = second_moment_initial_guess(x, y, z_fit)
+    if guess is None:
+        return {"success": False}
+
+    _, x0_g, y0_g, sigma_x_g, sigma_y_g, theta_g, offset_g = guess
+    amp_g = max(float(np.nanmax(z_fit) - np.nanmin(z_fit)), 1e-6)
+    alpha_x_g = max(float(sigma_x_g), 1e-6)
+    alpha_y_g = max(float(sigma_y_g), 1e-6)
+    beta_g = 2.5
+
+    if fit_region not in ("all", "wings"):
+        raise ValueError("fit_region must be 'all' or 'wings'.")
+
+    if fit_region == "wings":
+        q = float(np.clip(wing_quantile, 0.0, 0.99))
+        threshold = np.nanquantile(z_fit, q)
+        fit_mask = z_fit <= threshold
+        if np.count_nonzero(fit_mask) < 20:
+            fit_mask = np.isfinite(z_fit)
+    else:
+        fit_mask = np.isfinite(z_fit)
+
+    x_data = x[fit_mask]
+    y_data = y[fit_mask]
+    z_data = z_fit[fit_mask]
+
+    if not SCIPY_AVAILABLE:
+        return {
+            "success": True,
+            "amp": amp_g,
+            "x0": x0_g,
+            "y0": y0_g,
+            "alpha_x": np.max([alpha_x_g, minx]),
+            "alpha_y": np.max([alpha_y_g, miny]),
+            "beta": beta_g,
+            "theta": theta_g,
+            "offset": offset_g,
+            "method": "moments",
+            "fit_region": fit_region,
+        }
+
+    p0 = [amp_g, x0_g, y0_g, max(alpha_x_g, minx), max(alpha_y_g, miny), beta_g, theta_g, offset_g]
+    lower = [0.0, np.nanmin(x), np.nanmin(y), 1e-6, 1e-6, 1.05, -np.pi, -0.5]
+    upper = [3.0, np.nanmax(x), np.nanmax(y), 20.0, 20.0, 20.0, np.pi, 1.0]
+
+    try:
+        popt, _ = curve_fit(
+            moffat2d_rotated,
+            (x_data.ravel(), y_data.ravel()),
+            z_data.ravel(),
+            p0=p0,
+            bounds=(lower, upper),
+            maxfev=30000,
+        )
+        amp, x0, y0, alpha_x, alpha_y, beta, theta, offset = popt
+        return {
+            "success": True,
+            "amp": amp,
+            "x0": x0,
+            "y0": y0,
+            "alpha_x": np.max([alpha_x, minx]),
+            "alpha_y": np.max([alpha_y, miny]),
+            "beta": beta,
+            "theta": theta,
+            "offset": offset,
+            "method": "curve_fit",
+            "fit_region": fit_region,
+        }
+    except Exception:
+        return {
+            "success": True,
+            "amp": amp_g,
+            "x0": x0_g,
+            "y0": y0_g,
+            "alpha_x": np.max([alpha_x_g, minx]),
+            "alpha_y": np.max([alpha_y_g, miny]),
+            "beta": beta_g,
+            "theta": theta_g,
+            "offset": offset_g,
+            "method": "moments_fallback",
+            "fit_region": fit_region,
+        }
+
+
 def gaussian_fwhm_and_ellipticity(fit: Dict[str, Any]) -> Dict[str, float]:
     if not fit.get("success", False):
         return {
@@ -427,6 +537,30 @@ def gaussian_fwhm_and_ellipticity(fit: Dict[str, Any]) -> Dict[str, float]:
 
     fwhm_major = factor * sigma1
     fwhm_minor = factor * sigma2
+    ellipticity = 1.0 - fwhm_minor / fwhm_major if fwhm_major > 0 else np.nan
+
+    return {
+        "fwhm_major": float(fwhm_major),
+        "fwhm_minor": float(fwhm_minor),
+        "ellipticity": float(ellipticity),
+    }
+
+
+def moffat_fwhm_and_ellipticity(fit: Dict[str, Any]) -> Dict[str, float]:
+    if not fit.get("success", False):
+        return {
+            "fwhm_major": np.nan,
+            "fwhm_minor": np.nan,
+            "ellipticity": np.nan,
+        }
+
+    alpha1 = max(fit["alpha_x"], fit["alpha_y"])
+    alpha2 = min(fit["alpha_x"], fit["alpha_y"])
+    beta = max(float(fit["beta"]), 1.000001)
+    factor = 2.0 * np.sqrt(2.0 ** (1.0 / beta) - 1.0)
+
+    fwhm_major = factor * alpha1
+    fwhm_minor = factor * alpha2
     ellipticity = 1.0 - fwhm_minor / fwhm_major if fwhm_major > 0 else np.nan
 
     return {

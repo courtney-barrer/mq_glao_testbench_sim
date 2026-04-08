@@ -34,7 +34,7 @@ def simulate_sci_performance(beam, gl_corr, bench, t, pad_size, npix_pupil):
 # ==========================================
 
 def run_glao_telemetry(exposure_s=3.6, dt=0.1):
-    WAVELENGTH, SCIENCE_WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 633e-9, 2.2e-6, 0.013, 256, 2048
+    WAVELENGTH, SCIENCE_WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 589e-9, 0.589e-6, 0.013, 256, 2048
     SCI_OFFS = [0.0, 5.0, 10.0] 
     #FITS_PATH =  "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
     FITS_PATH = "C:/Users/bmcinnes/OneDrive - Macquarie University/Documents/GitHub/mq_glao_testbench_sim/phasescreens_median_dmScaled-1_radialScaled-0.fits"
@@ -44,7 +44,7 @@ def run_glao_telemetry(exposure_s=3.6, dt=0.1):
         pix_scale = hdul[0].header['PIXSCALE']
         bench = bt.OpticalBench3D()
         layers = [{"lbl":"FA", "z":-2.50, "hz":0.4}, {"lbl":"GL3", "z":-0.060, "hz":1.4}, 
-                  {"lbl":"GL2", "z":-0.030, "hz":1.0}, {"lbl":"GL1", "z":-0.000, "hz":0.7}]
+                  {"lbl":"GL2", "z":-0.030, "hz":1.0}, {"lbl":"GL1", "z":-0.001, "hz":0.7}]
         for l in layers:
             opd = (hdul[l["lbl"]].data * 500e-9) / (2*np.pi)
             if l["lbl"] == "FA":

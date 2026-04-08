@@ -5,10 +5,41 @@ import aotools
 from astropy.io import fits
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+plots_dir = os.path.join(script_dir, 'Phase Screen Plots')
+os.makedirs(plots_dir, exist_ok=True)
+
+# ==============================
+# PARAMETERS
+# ==============================
+N = 4096
+D_tel = 8.2                 # telescope diameter (m)
+DMActuators_tel = 35        # DM actuators across D_tel
+
+D_test = 0.013              # test bench beam diameter (m)
+DMActuators_test = 11       # DM actuators across D_test
+D_plate = 0.083             # phase plate useable OD (m)
+
+Aperture_scale = D_tel / D_test
+Plate_scale = D_tel / D_plate
+pixel_scale = D_plate / N   # metres per pixel
+
+# PSD model options: 'kolmogorov' (default) or 'von_karman'
+PSD_MODEL = 'von_karman' #'kolmogorov'#
+L0 = 4.1/Plate_scale  # von Karman outer scale (m) scaled to plate size.  4.1m scales to 41.5mm which is x3.2 on beam diameter D_test
+
+# Fried parameters to simulate (m) - Median seeing at 500 nm
+r0s_names = ['GL1', 'GL2', 'GL3', 'FA'] 
+r0s = np.array([0.279, 0.416, 0.920, 0.244]) 
+r0s = r0s / Aperture_scale  # Scale to test bench size
+
+# Taper up in the outer 13 mm (one beam diameter)
+R_transition = (83 - 2 * 13) / 83
+Scale_edge = 1.5 # Scale at the edge of the plate up for stonger turbulence  
 
 # Convention : "<turb_strength>_<DMscaled>_<radial_scaled>"
-batch_name = 'median_dmScaled-1_radialScaled-0' 
-batch_name_list = [f'median_dmScaled-{dm}_radialScaled-{radial}' for dm, radial in [[0,0],[1,0],[0,1],[1,1]]]
+#batch_name = 'median_dmScaled-1_radialScaled-0' 
+#batch_name_list = [f'median_dmScaled-{dm}_radialScaled-{radial}' for dm, radial in [[0,0],[1,0],[0,1],[1,1]]]
+batch_name_list = [f'median_dmScaled-{dm}_radialScaled-{radial}' for dm, radial in [[1,0],[1,1]]]# just run a couple
 
 # itrerate over the batch names and generate a file for each one
 # if dm_scaled = 0, then we will not apply the DM scaling to the phase screen
@@ -30,29 +61,106 @@ def make_radial_mask(size=4096, flat_radius_fraction=0.5, start_value=0.0, end_v
     return mask
 
 
-# ==============================
-# PARAMETERS
-# ==============================
-N = 4096
-D_tel = 8.2                 # telescope diameter (m)
-DMActuators_tel = 35        # DM actuators across D_tel
+def save_phase_linecuts(phase, pixel_scale, batch_name, screen_name, output_dir):
+    # For even-sized arrays, x=0 and y=0 are between two pixels; use the nearest central index.
+    n = phase.shape[0]
+    center_idx = n // 2
+    x_axis_mm = (np.arange(n) - center_idx) * pixel_scale * 1e3
 
-D_test = 0.013              # test bench beam diameter (m)
-DMActuators_test = 11       # DM actuators across D_test
-D_plate = 0.083             # phase plate useable OD (m)
+    y0_line = phase[center_idx, :]  # y ~= 0, varying x
+    x0_line = phase[:, center_idx]  # x ~= 0, varying y
 
-Aperture_scale = D_tel / D_test
-pixel_scale = D_plate / N   # metres per pixel
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(x_axis_mm, y0_line, label='y ~= 0 line (phase vs x)', color='tab:blue')
+    ax.plot(x_axis_mm, x0_line, label='x ~= 0 line (phase vs y)', color='tab:orange')
+    ax.set_xlabel('Position (mm)')
+    ax.set_ylabel('Phase (rad @ 500 nm)')
+    ax.set_title(f'Phase line cuts - {batch_name} - {screen_name}')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
 
-# Fried parameters to simulate (m) - Median seeing at 500 nm
-r0s = np.array([0.279, 0.416, 0.920, 0.244]) 
+    output_name = f'phase_linecuts_{batch_name}-{screen_name}.png'
+    fig.savefig(os.path.join(output_dir, output_name), dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
-r0s = r0s / Aperture_scale  # Scale to test bench size
-r0s_names = ['GL1', 'GL2', 'GL3', 'FA']      
 
-# Taper up in the outer 13 mm (one beam diameter)
-R_transition = (83 - 2 * 13) / 83
-Scale_edge = 1.5 # Scale at the edge of the plate up for stonger turbulence  
+def save_phase_psd_plot(phase, pixel_scale, batch_name, screen_name, output_dir, psd_model, r0, l0=None):
+    n = phase.shape[0]
+
+    # Measured 2D PSD from generated phase screen
+    ft = np.fft.fft2(phase)
+    psd2d = (np.abs(ft) ** 2) * (pixel_scale ** 2) / (n ** 2)
+
+    fx = np.fft.fftfreq(n, d=pixel_scale)
+    fy = np.fft.fftfreq(n, d=pixel_scale)
+    FX, FY = np.meshgrid(fx, fy)
+    fr = np.sqrt(FX**2 + FY**2)
+
+    # Radial average on log-spaced bins
+    f_min = 1.0 / (n * pixel_scale)
+    f_max = 0.5 / pixel_scale
+    edges = np.geomspace(f_min, f_max, 200)
+    f_flat = fr.ravel()
+    p_flat = psd2d.ravel()
+    valid = f_flat > 0
+    f_flat = f_flat[valid]
+    p_flat = p_flat[valid]
+
+    f_centers = np.sqrt(edges[:-1] * edges[1:])
+    p_radial = np.full_like(f_centers, np.nan, dtype=float)
+    for i in range(len(f_centers)):
+        in_bin = (f_flat >= edges[i]) & (f_flat < edges[i + 1])
+        if np.any(in_bin):
+            p_radial[i] = np.mean(p_flat[in_bin])
+    ok = np.isfinite(p_radial)
+
+    # Simple theoretical reference for shape comparison (scaled to measured first point)
+    f_ref = f_centers[ok]
+    if len(f_ref) > 0:
+        if psd_model == 'von_karman' and l0 is not None:
+            f0 = 1.0 / l0
+            p_ref = 0.023 * r0**(-5/3) * (f_ref**2 + f0**2)**(-11/6)
+        else:
+            p_ref = 0.023 * r0**(-5/3) * (f_ref**2 + 1e-20)**(-11/6)
+        if np.isfinite(p_radial[ok][0]) and p_ref[0] > 0:
+            p_ref *= p_radial[ok][0] / p_ref[0]
+
+    psd2d_shift = np.fft.fftshift(psd2d)
+    extent = [fx.min(), fx.max(), fy.min(), fy.max()]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    im = axes[0].imshow(np.log10(np.maximum(psd2d_shift, 1e-30)), origin='lower', extent=extent, cmap='magma')
+    axes[0].set_title('2D phase PSD (log10)')
+    axes[0].set_xlabel('fx (cycles/m)')
+    axes[0].set_ylabel('fy (cycles/m)')
+    fig.colorbar(im, ax=axes[0], label='log10(PSD)')
+
+    axes[1].loglog(f_centers[ok], p_radial[ok], label='Measured radial PSD', color='tab:blue')
+    if len(f_ref) > 0:
+        axes[1].loglog(f_ref, p_ref, '--', label=f'{psd_model} reference', color='tab:orange')
+
+    #add dotted lines for referencce
+    beam_diameter_m = 0.013
+    beam_freq = 1.0 / beam_diameter_m
+    axes[1].axvline(beam_freq, color='tab:red', linestyle=':', linewidth=1.5, label='Beam diameter (1/0.013 m)')
+    act_spacing_m = 0.0015
+    act_freq = 1.0 / act_spacing_m
+    axes[1].axvline(act_freq, color='tab:green', linestyle=':', linewidth=1.5, label='Actuator spacing (1/0.0015 m)')
+
+
+    axes[1].set_title('Radial phase PSD')
+    axes[1].set_xlabel('Spatial frequency (cycles/m)')
+    axes[1].set_ylabel('PSD (rad^2 m^2)')
+    axes[1].grid(True, which='both', alpha=0.3)
+    axes[1].legend()
+
+    fig.suptitle(f'Phase PSD - {batch_name} - {screen_name}')
+    fig.tight_layout()
+
+    output_name = f'phase_psd_{batch_name}-{screen_name}.png'
+    fig.savefig(os.path.join(output_dir, output_name), dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 # ==============================
 # BATCH LOOP
@@ -80,7 +188,15 @@ for batch_name in batch_name_list:
         FX, FY = np.meshgrid(fx, fy)
         f = np.sqrt(FX**2 + FY**2)
 
-        PSD_phi = 0.023 * r0**(-5/3) * (f**2 + 1e-10)**(-11/6)
+        # Kolmogorov: PSD ~ f^(-11/3), implemented as (f^2)^(-11/6)
+        if PSD_MODEL == 'kolmogorov':
+            PSD_phi = 0.023 * r0**(-5/3) * (f**2 + 1e-10)**(-11/6)
+        elif PSD_MODEL == 'von_karman':
+            f0 = 1.0 / L0
+            PSD_phi = 0.023 * r0**(-5/3) * (f**2 + f0**2)**(-11/6)
+        else:
+            raise ValueError(f"Unsupported PSD_MODEL: {PSD_MODEL}. Use 'kolmogorov' or 'von_karman'.")
+
         df = 1.0 / (N * pixel_scale)
         rng = np.random.default_rng(seed) 
         seed += 1 # Increment seed for next screen
@@ -108,14 +224,21 @@ for batch_name in batch_name_list:
         OPD = (np.max(phase) - np.min(phase)) * 500e-9 / (2*np.pi) * 1e6
         print(f"Max OPD for {name}: {OPD:.2f} um")
 
+        #optional save line cuts for visualization and sanity check
+        #save_phase_linecuts(phase, pixel_scale, batch_name, name, plots_dir)
+        #print(f"Saved phase line cuts for {name}")
+
+        save_phase_psd_plot(phase, pixel_scale, batch_name, name, plots_dir, PSD_MODEL, r0, l0=L0)
+        print(f"Saved phase PSD for {name}")
+
         #optional visualization of the phase screen
-        # fig, ax = plt.subplots(figsize=(6, 5))
-        # im = ax.imshow(phase, cmap='RdBu')
-        # ax.set_title(f"Phase Screen (radians @ 500 nm) — {name} r0 = {r0_mm} mm")
-        # fig.colorbar(im, ax=ax)
-        # fig.tight_layout()
-        # fig.savefig(os.path.join(script_dir, f"phase_screen_{batch_name+"-"+name}.png"), dpi=150)
-        # plt.close(fig)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(phase, cmap='RdBu')
+        ax.set_title(f"Phase Screen (radians @ 500 nm) — {name} r0 = {r0_mm} mm")
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        fig.savefig(os.path.join(plots_dir, f"phase_screen_{batch_name+"-"+name}.png"), dpi=150)
+        plt.close(fig)
         
         # Build individual HDU
         hdu = fits.PrimaryHDU(phase)

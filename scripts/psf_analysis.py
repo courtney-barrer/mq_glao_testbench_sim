@@ -24,6 +24,23 @@ def apply_dm_correction(phase_map, acts, mask):
     low_spatial = gaussian_filter(work_phase, sigma=sigma, mode='reflect')
     return np.where(mask, low_spatial, 0)
 
+def remove_tip_tilt(phase_map, mask):
+    """Remove tip-tilt (linear plane fit) from phase map."""
+    y, x = np.indices(phase_map.shape)
+    valid = mask.flatten()
+    x_flat = x.flatten()[valid]
+    y_flat = y.flatten()[valid]
+    phase_flat = phase_map.flatten()[valid]
+    
+    # Fit plane: phase = a*x + b*y + c
+    A = np.column_stack([x_flat, y_flat, np.ones_like(x_flat)])
+    coeffs, _, _, _ = np.linalg.lstsq(A, phase_flat, rcond=None)
+    a, b, c = coeffs
+    
+    # Subtract fitted plane
+    fitted_plane = a * x + b * y + c
+    return phase_map - fitted_plane
+
 def pad_and_fft_psf(sample, pad_to=2048):
     """Generates high-resolution RAW intensity PSF."""
     mask, phase, amp = sample["mask"], np.nan_to_num(sample["phase_map_rad"]), sample["amplitude"]
@@ -33,7 +50,7 @@ def pad_and_fft_psf(sample, pad_to=2048):
     ef = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(padded)))
     return np.abs(ef) ** 2
 
-def analyze_psf(psf, perfect_psf, angular_pixel_scale, ao_label="N/A", log_plot=False):
+def analyze_psf(psf, perfect_psf, angular_pixel_scale, ao_label="N/A", log_plot=False, fit_mode="moffat"):
     """Robust analysis with optional log-scale visualization."""
     total_flux = np.sum(psf)
     strehl_fft = (np.max(psf) / total_flux) / (np.max(perfect_psf) / np.sum(perfect_psf))
@@ -52,8 +69,19 @@ def analyze_psf(psf, perfect_psf, angular_pixel_scale, ao_label="N/A", log_plot=
     y_idx, x_idx = np.indices(psf_crop.shape)
     x_ld = (x_idx - (peak_x - x_s)) * angular_pixel_scale
     y_ld = (y_idx - (peak_y - y_s)) * angular_pixel_scale
-    fit = bt.fit_2d_gaussian(x_ld, y_ld, psf_crop / np.max(psf_crop))
-    metrics = bt.gaussian_fwhm_and_ellipticity(fit)
+    psf_crop_norm = psf_crop / np.max(psf_crop)
+    fit_mode = fit_mode.lower()
+    if fit_mode == "gaussian":
+        fit = bt.fit_2d_gaussian(x_ld, y_ld, psf_crop_norm)
+        metrics = bt.gaussian_fwhm_and_ellipticity(fit)
+    elif fit_mode == "moffat":
+        fit = bt.fit_2d_moffat(x_ld, y_ld, psf_crop_norm, fit_region="all")
+        metrics = bt.moffat_fwhm_and_ellipticity(fit)
+    elif fit_mode in ("moffat_wings", "moffat-wings", "moffatwings"):
+        fit = bt.fit_2d_moffat(x_ld, y_ld, psf_crop_norm, fit_region="wings")
+        metrics = bt.moffat_fwhm_and_ellipticity(fit)
+    else:
+        raise ValueError("fit_mode must be 'gaussian', 'moffat', or 'moffat_wings'.")
 
     # Encircled Energy profile calculation
     yy, xx = np.indices(psf.shape)
@@ -63,38 +91,82 @@ def analyze_psf(psf, perfect_psf, angular_pixel_scale, ao_label="N/A", log_plot=
     ee80 = (r_pix[idx] * angular_pixel_scale)[np.searchsorted(ee_curve, 0.80)]
 
     return {"strehl": strehl_fft, "ee80": ee80, "ell": metrics["ellipticity"], 
-            "fwhm": metrics["fwhm_major"], "psf_crop": psf_crop, "ee_curve": ee_curve}
+            "fwhm": metrics["fwhm_major"], "psf_crop": psf_crop, "ee_curve": ee_curve,
+            "fit_mode": fit_mode}
+
+
+def save_gl_slice_plot(gl_phase, gl_corr, output_dir, t_stamp):
+    n = gl_phase.shape[0]
+    center_idx = n // 2
+    pixel_axis = np.arange(n) - center_idx
+    pixel_axis = pixel_axis[1:-1]
+
+    gl_phase_y0 = gl_phase[center_idx, 1:-1]
+    gl_phase_x0 = gl_phase[1:-1, center_idx]
+    gl_corr_y0 = gl_corr[center_idx, 1:-1]
+    gl_corr_x0 = gl_corr[1:-1, center_idx]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True)
+
+    axes[0].plot(pixel_axis, gl_phase_y0, label='y = 0 slice (varying x)', color='tab:blue')
+    axes[0].plot(pixel_axis, gl_phase_x0, label='x = 0 slice (varying y)', color='tab:orange')
+    axes[0].set_title('GL phase slices')
+    axes[0].set_xlabel('Pixel offset from center')
+    axes[0].set_ylabel('Phase (rad)')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend()
+
+    axes[1].plot(pixel_axis, gl_corr_y0, label='y = 0 slice (varying x)', color='tab:blue')
+    axes[1].plot(pixel_axis, gl_corr_x0, label='x = 0 slice (varying y)', color='tab:orange')
+    axes[1].set_title('GL correction slices')
+    axes[1].set_xlabel('Pixel offset from center')
+    axes[1].set_ylabel('Phase (rad)')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+
+    fig.suptitle(f'GL centerline slices at t = {t_stamp:.3f} s')
+    fig.tight_layout()
+
+    out_path = os.path.join(output_dir, 'gl_phase_gl_corr_slices.png')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved plot: {out_path}")
 
 # ==========================================
 # 2. SETUP & DATA LOADING
 # ==========================================
 
 #FITS_PATH = "/home/bbarrer/mq_glao_testbench_sim/phasescreens/batch1_test/phasescreens_median_dmScaled-1_radialScaled-0.fits" #"phasescreens_median_dmScaled-1_radialScaled-0.fits"
-#FITS_PATH = "C:/Users/bmcinnes/OneDrive - Macquarie University/Documents/GitHub/mq_glao_testbench_sim/phasescreens_median_dmScaled-1_radialScaled-0.fits"
+#FITS_PATH = "C:/Users/bmcinnes/OneDrive - Macquarie University/Documents/GitHub/mq_glao_testbench_sim/phasescreens_median_dmScaled-0_radialScaled-0.fits"
 
 # FITS file path relative to this script's directory
 script_dir = os.path.dirname(os.path.abspath(__file__))
+analysis_plots_dir = os.path.join(script_dir, 'psf_analysis_plots')
+os.makedirs(analysis_plots_dir, exist_ok=True)
 FITS_PATH = os.path.join(script_dir, "..", "phasescreens_median_dmScaled-1_radialScaled-0.fits")
 
 with fits.open(FITS_PATH) as hdul:
     # Ensure correct optical order from source (z=-3.25) to pupil (z=0)
-    layer_configs = [{"label": "FA", "z": -2.50, "hz": 0.2}, {"label": "GL3", "z": -0.060, "hz": 1.4},
-                    {"label": "GL2", "z": -0.030, "hz": 1.0}, {"label": "GL1", "z": -0.001, "hz": 0.7}]
+    #layer_configs = [{"label": "FA", "z": -2.50, "hz": 0.2}, {"label": "GL3", "z": -0.060, "hz": 1.4},
+    #                {"label": "GL2", "z": -0.030, "hz": 1.0}, {"label": "GL1", "z": -0.001, "hz": 0.7}]
+    layer_configs = [{"label": "FA", "z": -2.50, "hz": 1.0}, {"label": "GL3", "z": -0.060, "hz": 1.0},
+                    {"label": "GL2", "z": -0.030, "hz": 1.0}, {"label": "GL1", "z": -0.001, "hz": 1.0}]
+ 
     bench = bt.OpticalBench3D()
     pix_scale = hdul[0].header['PIXSCALE']
     for cfg in layer_configs:
         opd = (hdul[cfg["label"]].data * 500e-9) / (2*np.pi)
         if cfg["label"] == "FA":
-            bench.add(bt.RotatingPhaseScreen3D(point=[26e-3,0,cfg["z"]], normal=[0,0,1], opd_map=opd,
+            bench.add(bt.RotatingPhaseScreen3D(point=[25e-3,0,cfg["z"]], normal=[0,0,1], opd_map=opd,
                       map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*cfg["hz"], label=cfg["label"]))
         else:
-            bench.add(bt.RotatingPhaseScreen3D(point=[34e-3,0,cfg["z"]], normal=[0,0,1], opd_map=opd,
+            bench.add(bt.RotatingPhaseScreen3D(point=[34.5e-3,0,cfg["z"]], normal=[0,0,1], opd_map=opd,
                       map_extent_m=opd.shape[0]*pix_scale, angular_velocity=2*np.pi*cfg["hz"], label=cfg["label"]))
 
 # Constants
-WAVELENGTH, SCIENCE_WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 633e-9, 2.2e-6, 0.013, 256, 2048
+WAVELENGTH, SCIENCE_WAVELENGTH, D_BEAM, NPIX_PUPIL, PAD_SIZE = 589e-9, 589e-9, 0.013, 256, 2048
 ANGULAR_SCALE = 1.0 / (PAD_SIZE / (NPIX_PUPIL / 2.0))
-EXPOSURE_TIME, DT = 2.0, 0.2 # Causes some zero fwhm GLAO results
+EXPOSURE_TIME, DT = 1.0, 0.125#
 #EXPOSURE_TIME, DT = 2.0, 0.4 # Reduced for quick testing
 times = np.arange(0, EXPOSURE_TIME, DT)
 
@@ -121,6 +193,10 @@ for t in times:
     # 1. Reconstruct GL correction from 4 corners
     lgs_s = [bt.sample_beam_phase_amplitude_on_pupil_plane(b, bench, [0,0,0], t, NPIX_PUPIL) for b in lgs_beams]
     gl_phase = np.mean([s["phase_map_rad"] for s in lgs_s], axis=0)
+    
+    #Optional Remove tip-tilt from averaged GL phase
+    #gl_phase = remove_tip_tilt(gl_phase, lgs_s[0]["mask"])
+    
     #gl_corr = apply_dm_correction(gl_phase, acts=35, mask=lgs_s[0]["mask"])
     gl_corr = apply_dm_correction(gl_phase, acts=11, mask=lgs_s[0]["mask"])
     
@@ -130,6 +206,11 @@ for t in times:
         accum_no_ao[i] += pad_and_fft_psf(s_samp, PAD_SIZE)
         s_samp["phase_map_rad"] -= gl_corr
         accum_ao[i] += pad_and_fft_psf(s_samp, PAD_SIZE)
+
+# A sanity check plot of the GL phase and correction slices at the end of the simulation (can be commented out )
+#if len(times) > 0:
+#    save_gl_slice_plot(gl_phase, gl_corr, analysis_plots_dir, times[-1])
+ 
 
 # ==========================================
 # 4. OUTPUTS & PLOTTING
@@ -173,7 +254,18 @@ axes[1,1].plot(r_axis, res_ao[0]["ee_curve"][:1000], 'b-', label='GLAO Center')
 
 axes[0,0].set_ylabel("Strehl"); axes[0,1].set_ylabel("FWHM [L/D]"); axes[1,0].set_ylabel("Ellipticity"); axes[1,1].set_ylabel("Enc. Energy")
 for ax in axes.flatten(): ax.set_xlabel("Field Angle [arcmin]"); ax.legend(); ax.grid(True, alpha=0.3)
-plt.tight_layout(); plt.show()
+fig_grid.tight_layout()
+fig.tight_layout()
+
+grid_plot_filename = "psf_grid_plot.png"
+diagnostic_plot_filename = "psf_diagnostic_plot.png"
+fig_grid.savefig(grid_plot_filename, dpi=150, bbox_inches='tight')
+fig.savefig(diagnostic_plot_filename, dpi=150, bbox_inches='tight')
+plt.close(fig_grid)
+plt.close(fig)
+
+print(f"Saved plot: {grid_plot_filename}")
+print(f"Saved plot: {diagnostic_plot_filename}")
 
 # ==========================================
 # 5. RESULTS TABLE
