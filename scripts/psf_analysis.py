@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter
 import pandas as pd
+import matplotlib.patches as patches
 import beam_trace as bt  # Assumes beam_trace.py is in the same directory
 
 # ==========================================
@@ -262,13 +263,86 @@ def analyze_psf(psf, perfect_psf, angular_pixel_scale):
     }
 
 
+# new 
+def plot_beam_footprints_on_screens(bench, lgs_beams, sci_beams, t=0.0):
+    """
+    Plots the full unrotated phase screen maps and overlays the cross-section
+    contours of the LGS and Science beams at a specific time t.
+    """
+    # Extract only the phase screen elements from the bench
+    screens = [e for e in bench.elements if isinstance(e, bt.RotatingPhaseScreen3D)]
+    n_screens = len(screens)
+    
+    fig, axes = plt.subplots(1, n_screens, figsize=(5 * n_screens, 5))
+    if n_screens == 1:
+        axes = [axes]
+        
+    for ax, screen in zip(axes, screens):
+        extent = screen.map_extent_m / 2.0
+        
+        # 1. Plot the background OPD map (converted to nanometers for visibility)
+        im = ax.imshow(
+            screen.opd_map * 1e9, 
+            origin="lower", 
+            extent=[-extent, extent, -extent, extent],
+            cmap="viridis"
+        )
+        plt.colorbar(im, ax=ax, label="OPD [nm]", fraction=0.046, pad=0.04)
+        
+        # Draw the clear aperture of the phase screen
+        clear_ap = patches.Circle((0, 0), screen.clear_radius, color='white', fill=False, ls=':', lw=1, label="Clear Aperture")
+        ax.add_patch(clear_ap)
+
+        # Because screens rotate in the simulation, map the fixed 3D spatial intersections 
+        # backwards onto the raw (unrotated) phase map array.
+        angle = screen.current_rotation_angle(t)
+        rot_mat = bt.rotation_matrix_2d(-angle)
+
+        # 2. Overlay LGS beams (Red Dashed)
+        for i, beam in enumerate(lgs_beams):
+            intersections = bench.trace_chief_intersections(beam, t=t)
+            if screen.label in intersections:
+                p = intersections[screen.label]["point"]
+                u, v = screen.local_coordinates(p)
+                uv_rot = rot_mat @ np.array([u, v])
+                
+                label = "LGS Beams" if i == 0 else None
+                circle = patches.Circle((uv_rot[0], uv_rot[1]), beam.radius, 
+                                        edgecolor='red', facecolor='none', lw=1.5, ls='--', label=label)
+                ax.add_patch(circle)
+        
+        # 3. Overlay Science beams (Cyan Solid)
+        for i, beam in enumerate(sci_beams):
+            intersections = bench.trace_chief_intersections(beam, t=t)
+            if screen.label in intersections:
+                p = intersections[screen.label]["point"]
+                u, v = screen.local_coordinates(p)
+                uv_rot = rot_mat @ np.array([u, v])
+                
+                label = "Sci Beams" if i == 0 else None
+                circle = patches.Circle((uv_rot[0], uv_rot[1]), beam.radius, 
+                                        edgecolor='cyan', facecolor='none', lw=1.5, label=label)
+                ax.add_patch(circle)
+
+        ax.set_title(f"{screen.label} (z={screen.point[2]:.3f} m)\nt = {t}s")
+        ax.set_xlabel("u [m]")
+        ax.set_ylabel("v [m]")
+        ax.set_xlim(-extent, extent)
+        ax.set_ylim(-extent, extent)
+        ax.legend(loc="upper right", fontsize=8)
+
+    plt.tight_layout()
+    plt.show()
+
 # ==========================================
 # 2. SETUP & DATA LOADING
 # ==========================================
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 FITS_PATH = os.path.join(
-    script_dir, "../phasescreens/batch1_test/", "phasescreens_median_dmScaled-1_radialScaled-0.fits"
+    #script_dir, "../phasescreens/batch1_test/", "phasescreens_median_dmScaled-1_radialScaled-0.fits"
+    #script_dir, "../phasescreens/scrns_2_order_v1/testbench_phasescreens_20260429_strong.fits"
+    script_dir, "../phasescreens/scrns_2_order_v2/Testbench_phasescreens_20260506.fits"
 )
 
 with fits.open(FITS_PATH) as hdul:
@@ -276,7 +350,7 @@ with fits.open(FITS_PATH) as hdul:
         {"label": "FA",  "z": -2.50,  "hz": 0.2},
         {"label": "GL3", "z": -0.060, "hz": 1.4},
         {"label": "GL2", "z": -0.030, "hz": 1.0},
-        {"label": "GL1", "z": -0.001, "hz": 0.7},
+        {"label": "GL1", "z": -0.001, "hz": 1.7},
     ]
 
     bench = bt.OpticalBench3D()
@@ -299,7 +373,7 @@ with fits.open(FITS_PATH) as hdul:
         else:
             bench.add(
                 bt.RotatingPhaseScreen3D(
-                    point=[34e-3, 0, cfg["z"]],
+                    point=[24e-3, 0, cfg["z"]],#[34e-3, 0, cfg["z"]],
                     normal=[0, 0, 1],
                     opd_map=opd,
                     map_extent_m=opd.shape[0] * pix_scale,
@@ -310,7 +384,7 @@ with fits.open(FITS_PATH) as hdul:
 
 # Constants
 WAVELENGTH = 633e-9
-SCIENCE_WAVELENGTH = 2.2e-6
+SCIENCE_WAVELENGTH = 1.2e-6 #2.2e-6
 D_BEAM = 0.013
 NPIX_PUPIL = 256
 PAD_SIZE = 2048
@@ -318,8 +392,8 @@ PAD_SIZE = 2048
 # Existing lambda/D pixel scaling convention
 ANGULAR_SCALE = 1.0 / (PAD_SIZE / (NPIX_PUPIL / 2.0))
 
-EXPOSURE_TIME = 2.0
-DT = 0.2
+EXPOSURE_TIME = 5.0
+DT = 0.1
 times = np.arange(0, EXPOSURE_TIME, DT)
 
 science_angles = np.linspace(0, 10, 5)
@@ -413,6 +487,12 @@ for t in times:
 # ==========================================
 # 4. OUTPUTS & PLOTTING
 # ==========================================
+
+
+# --- Display beam footprints across all screens ---
+print("Plotting beam footprints on phase screens...")
+plot_beam_footprints_on_screens(bench, lgs_beams, sci_beams, t=0.0)
+
 
 res_ao = [analyze_psf(accum_ao[i] / len(times), perfect_psf, ANGULAR_SCALE) for i in range(len(sci_beams))]
 res_no = [analyze_psf(accum_no_ao[i] / len(times), perfect_psf, ANGULAR_SCALE) for i in range(len(sci_beams))]

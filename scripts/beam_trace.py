@@ -361,7 +361,7 @@ def second_moment_initial_guess(x: np.ndarray, y: np.ndarray, z: np.ndarray):
     return amp, x0, y0, sigma_major, sigma_minor, theta, offset
 
 #update with diffractiuon limits
-def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray, minx=1.0, miny=1.0) -> Dict[str, Any]:
+def fit_2d_gaussian(x: np.ndarray, y: np.ndarray, z: np.ndarray, minx=0.1, miny=0.1) -> Dict[str, Any]:
     z = np.asarray(z, dtype=float)
     z_fit = z - np.nanmin(z)
     if np.nanmax(z_fit) > 0:
